@@ -1,0 +1,9 @@
+# Dependencies (none required, but just in case)
+node_modules/
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
