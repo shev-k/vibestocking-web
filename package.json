@@ -1,0 +1,6 @@
+{
+  "name": "vibestocking-web",
+  "private": true,
+  "scripts": { "start": "node serve.js" },
+  "engines": { "node": ">=18" }
+}
