@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: vibestocking-web
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node serve.js
