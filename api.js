@@ -72,16 +72,30 @@ const API = (() => {
     const out = {};
     if (!ylist.length) return out;
     const j = await getJSON(`https://query1.finance.yahoo.com/v8/finance/spark?symbols=${encodeURIComponent(ylist.join(','))}&range=1d&interval=15m`);
-    const res = j && j.spark && j.spark.result;
-    if (!res) return out;
-    for (const it of res){
-      const sym = it.symbol;
-      const r = (it.response && it.response[0]) || it;
-      const meta = r.meta || {};
-      const spark = sparkVals(r.indicators && r.indicators.quote && r.indicators.quote[0] && r.indicators.quote[0].close);
-      const price = toD(meta.regularMarketPrice) ?? (spark.length ? spark[spark.length-1] : null);
+    if (!j) return out;
+    const res = j.spark && j.spark.result;
+    if (res){
+      for (const it of res){
+        const sym = it.symbol;
+        const r = (it.response && it.response[0]) || it;
+        const meta = r.meta || {};
+        const spark = sparkVals(r.indicators && r.indicators.quote && r.indicators.quote[0] && r.indicators.quote[0].close);
+        const price = toD(meta.regularMarketPrice) ?? (spark.length ? spark[spark.length-1] : null);
+        if (price == null) continue;
+        const prev = toD(meta.chartPreviousClose) ?? toD(meta.previousClose) ?? (spark.length ? spark[0] : null);
+        const pct = (prev && prev !== 0) ? (price - prev) / prev * 100 : 0;
+        out[sym] = {level: price, pct, spark};
+      }
+      return out;
+    }
+    // Compact map format: { SYM: {close:[...], previousClose, chartPreviousClose, ...} }
+    for (const sym in j){
+      const r = j[sym];
+      if (!r || !Array.isArray(r.close)) continue;
+      const spark = sparkVals(r.close);
+      const price = spark.length ? spark[spark.length-1] : null;
       if (price == null) continue;
-      const prev = toD(meta.chartPreviousClose) ?? toD(meta.previousClose) ?? (spark.length ? spark[0] : null);
+      const prev = toD(r.chartPreviousClose) ?? toD(r.previousClose) ?? spark[0];
       const pct = (prev && prev !== 0) ? (price - prev) / prev * 100 : 0;
       out[sym] = {level: price, pct, spark};
     }
