@@ -1,33 +1,52 @@
 /* ============================================================
-   VibeStocking Web — SPA shell, live data store and screen render.
-   Mobile = faithful app UI; desktop = sidebar + focused content.
-   Live values overlay the demo engine (data.js); charts are always
-   from the API (loader / "unavailable" instead of mock curves).
+   app.js — ЯДРО веб-версии VibeStocking: состояние, рендер, события.
+
+   Устройство (псевдо-React без фреймворка):
+     • состояние — простые объекты (tab / state / live / detail);
+     • каждый экран — ЧИСТАЯ ФУНКЦИЯ, возвращающая HTML-строку;
+     • изменил состояние -> вызвал render() -> DOM перестроен;
+     • события — ОДИН делегированный слушатель на весь документ,
+       команды закодированы data-атрибутами (data-open, data-tf...).
+
+   Мобильная раскладка = точная копия приложения; десктопная =
+   сайдбар + контент. Живые данные накладываются на демо-движок
+   (data.js); графики — ТОЛЬКО из API (спиннер / "unavailable"
+   вместо фейковых кривых).
    ============================================================ */
 
-/* ---------- state ---------- */
+/* ---------- состояние ---------- */
+// Вкладки: [id, заголовок, подзаголовок, имя иконки из ICONS].
 const TABS=[['markets','Markets','Live global prices','chart'],
   ['news','News','Market headlines','article'],
   ['portfolio','Portfolio','Your positions','wallet'],
   ['pro','Upgrade','VibeStocking Pro','crown']];
-let tab='markets';
+let tab='markets'; // активная вкладка
+// Пользовательские настройки: валюта / тема / страна-рынок.
 const state={cur:'USD', theme:'dark', country:'US'};
 
+// Живые данные (аналог LiveData из мобилки): цены, спарклайны,
+// котировки индексов, заголовки + флаги статуса загрузки.
 const live={prices:{}, sparks:{}, idx:{}, headlines:[],
   loading:false, usingLive:false, fromCache:false, lastUpdated:null, error:null};
 
-/* watchlist store (persisted) */
-const WK='vs_web_watch_v1';
+/* watchlist (персистентный в localStorage) */
+const WK='vs_web_watch_v1'; // ключ хранилища (v1 — версия формата)
+// Инициализация IIFE: читаем из localStorage; при ошибке или первом
+// запуске — копия демо-списка [...WATCHLIST] (тот же "посев", что в мобилке).
 let watch=(()=>{try{const r=localStorage.getItem(WK);if(r)return JSON.parse(r);}catch(_){}return [...WATCHLIST];})();
 function saveWatch(){try{localStorage.setItem(WK,JSON.stringify(watch));}catch(_){}}
 const inWatch=s=>watch.includes(s);
+// Переключить членство; новые тикеры — в начало. Возвращает новое состояние.
 function toggleWatch(s){ if(inWatch(s))watch=watch.filter(x=>x!==s); else watch=[s,...watch]; saveWatch(); return inWatch(s); }
 
+// === ОВЕРЛЕЙ live/демо (дословный порт priceOf/pctOf из live_data.dart):
+// живая цена, если загружена, иначе демо-цена из каталога.
 const priceOf=co=>live.prices[co.sym]?live.prices[co.sym].price:co.price;
 const pctOf=co=>live.prices[co.sym]?live.prices[co.sym].changePct:co.dPct;
-const isLive=sym=>!!live.prices[sym];
-const sparkOf=sym=>{const s=live.sparks[sym];return (s&&s.length>=2)?s:null;};
-const idxQuote=sym=>live.idx[sym];
+const isLive=sym=>!!live.prices[sym];                                   // для бейджа LIVE
+const sparkOf=sym=>{const s=live.sparks[sym];return (s&&s.length>=2)?s:null;}; // спарклайн или null
+const idxQuote=sym=>live.idx[sym];                                      // котировка индекса
+// Честная подпись режима данных: Live / Cached / Demo.
 function statusLabel(){
   const n=Object.keys(live.prices).length;
   if(live.loading)return 'Updating…';
@@ -36,11 +55,16 @@ function statusLabel(){
   return 'Demo data';
 }
 
-/* ---- company logo chip (real logo with graceful fallback to letters) ---- */
+/* ---- чип-логотип компании (настоящий логотип с fallback на буквы) ---- */
+// Домены для запасного источника логотипов (Clearbit ищет по домену).
 const DOMAIN={NVDA:'nvidia.com',AAPL:'apple.com',MSFT:'microsoft.com',TSLA:'tesla.com',
   AMZN:'amazon.com',GOOGL:'google.com',META:'meta.com',AMD:'amd.com',JPM:'jpmorganchase.com',
   NFLX:'netflix.com',DIS:'disney.com',COIN:'coinbase.com',SAP:'sap.com',SIE:'siemens.com',
   ASML:'asml.com',SHEL:'shell.com',TM:'toyota.com',BABA:'alibaba.com'};
+// Чип: градиент + 2 буквы тикера, поверх — <img> с логотипом.
+// onload показывает картинку; onerror переключает на запасной URL
+// (data-fb) или удаляет <img>, открывая буквы. Тот же приём,
+// что _LogoImage в мобильном common.dart.
 function chip(sym,size,radius,extra){
   const s=size||38, r=(radius!=null?radius:11), fs=s<30?'font-size:11px;':'';
   const fb=DOMAIN[sym]?` data-fb="https://logo.clearbit.com/${DOMAIN[sym]}"`:'';
@@ -50,7 +74,9 @@ function chip(sym,size,radius,extra){
     + ` onload="this.classList.add('on')" onerror="if(this.dataset.fb){this.src=this.dataset.fb;this.removeAttribute('data-fb');}else{this.remove();}"></div>`;
 }
 
-/* ---------- shared row ---------- */
+/* ---------- общая строка акции ---------- */
+// Чип / тикер+имя / спарклайн / цена+изменение. data-open="SYM" —
+// команда для bindEvents: тап открывает экран акции.
 function stockRow(co){const price=priceOf(co),pct=pctOf(co),up=pct>=0;const sp=sparkOf(co.sym);return `
   <div class="row" data-open="${co.sym}">
     ${chip(co.sym)}
@@ -60,15 +86,19 @@ function stockRow(co){const price=priceOf(co),pct=pctOf(co),up=pct>=0;const sp=s
       <div class="c mono ${up?'up-c':'down-c'}">${fmtPct(pct)}</div></div>
   </div>`;}
 
-/* ================= SCREENS ================= */
+/* ================= ЭКРАНЫ ================= */
+// Вкладка Markets: статус-бар, чипы стран, hero-индекс выбранной
+// страны с живым графиком, два других индекса, топ-гейнеры, все акции.
 function renderMarkets(){
   const ct=COUNTRIES.find(x=>x.code===state.country)||COUNTRIES[0];
-  const hero=BYIDX[ct.index]||INDICES[0];
-  const iq=idxQuote(hero.sym);
-  const level=iq?iq.level:hero.base, hpct=iq?iq.changePct:hero.dPct;
-  const hAbs=level-level/(1+hpct/100), hUp=hpct>=0;
+  const hero=BYIDX[ct.index]||INDICES[0];       // главный индекс страны
+  const iq=idxQuote(hero.sym);                  // живая котировка (или undefined)
+  const level=iq?iq.level:hero.base, hpct=iq?iq.changePct:hero.dPct; // оверлей
+  const hAbs=level-level/(1+hpct/100), hUp=hpct>=0; // абсолют из уровня и %
   const others=INDICES.filter(i=>i.sym!==hero.sym).slice(0,2);
+  // Топ-гейнеры: копия массива, сортировка по ЖИВОМУ проценту, топ-4.
   const gainers=[...COMPANIES].sort((a,b)=>pctOf(b)-pctOf(a)).slice(0,4);
+  // График hero — только из живых данных; иначе спиннер/надпись.
   const heroChart = (iq&&iq.spark.length>=2) ? areaSVG(iq.spark,320,88)
     : `<div class="chart-msg">${live.loading?spinner():'Chart unavailable'}</div>`;
   return `
@@ -101,11 +131,16 @@ function renderMarkets(){
   </div>`;
 }
 
+// Вкладка News: живые заголовки, если загружены, иначе демо.
 function renderNews(){
   return live.headlines.length ? renderNewsLive(live.headlines) : renderNewsMock();
 }
+// Живые новости: большая карточка первой статьи + список остальных.
+// data-url — тап открывает статью в новой вкладке.
+// escapeHtml на ВСЕХ внешних строках — защита от XSS.
 function renderNewsLive(arts){
   const feat=arts[0];
+  // Хелпер: блок картинки заданной высоты (onerror убирает битую картинку).
   const img=(a,h)=>`<div class="ph" style="height:${h}px">${a.imageUrl?`<img src="${escapeHtml(a.imageUrl)}" onerror="this.remove()" />`:''}</div>`;
   return `
   <div class="news-grid">
@@ -130,6 +165,9 @@ function renderNewsLive(arts){
     </div>
   </div>`;
 }
+// Демо-новости (fallback): структура та же, но data-open вместо data-url —
+// тап открывает ЭКРАН АКЦИИ (у демо-новостей нет настоящих ссылок),
+// и добавлен блок с ценой упомянутой компании.
 function renderNewsMock(){
   const feat=NEWS[0],fco=BYSYM[feat.sym],fup=pctOf(fco)>=0;
   return `
@@ -164,10 +202,13 @@ function renderNewsMock(){
   </div>`;
 }
 
+// Вкладка Portfolio: итоги считаются из ЖИВЫХ цен одним проходом
+// (то же, что PortfolioScreen в мобилке): стоимость, вложено,
+// изменение за день; затем hero, статистика, позиции и watchlist.
 function renderPortfolio(){
   let value=0,cost=0,day=0;const hold=PORTFOLIO.map(h=>{const co=BYSYM[h.sym];const px=priceOf(co);const val=px*h.shares;
     value+=val;cost+=h.avg*h.shares; const dAbs=isLive(co.sym)?px*pctOf(co)/100:co.dAbs; day+=dAbs*h.shares; return {h,co,val,px};});
-  const gain=value-cost,gpct=cost?gain/cost*100:0,dpct=(value-day)?day/(value-day)*100:0;
+  const gain=value-cost,gpct=cost?gain/cost*100:0,dpct=(value-day)?day/(value-day)*100:0; // защита от деления на 0
   const dUp=day>=0,gUp=gain>=0;
   return `
   <div class="pf-grid">
@@ -211,11 +252,14 @@ function renderPortfolio(){
   : `<div class="card" style="padding:18px;text-align:center;color:var(--text3);font-size:13px">No symbols yet — add some from a stock page.</div>`}`;
 }
 
+// Тарифы: [имя, $/мес, $/мес при годовой, текст кнопки, фичи, выделенный?].
 const PLANS=[
  ['Basic',0,0,'Current plan',['Real-time quotes (15-min delay)','10 watchlist symbols','1 portfolio'],false],
  ['Pro',14,11,'Upgrade to Pro',['Real-time streaming quotes','Unlimited watchlists & alerts','5 portfolios + analytics','Advanced charting & indicators','Level II market depth'],true],
  ['Desk',39,32,'Contact sales',['Everything in Pro','API access & data exports','Multi-seat team workspace','Dedicated account manager'],false]];
-let proAnnual=true;
+let proAnnual=true; // выбран годовой период оплаты?
+// Вкладка Upgrade: hero с тумблером Monthly/Annual + карточки тарифов.
+// Кнопки — демо (data-toast). Аналог pro_screen.dart.
 function renderPro(){
   return `
   <div style="text-align:center;max-width:560px;margin:0 auto">
@@ -245,39 +289,52 @@ function renderPro(){
   <div style="text-align:center;color:var(--text3);font-size:12px;margin-top:6px">30-day money-back guarantee</div>`;
 }
 
-/* ================= DETAIL (live) ================= */
+/* ================= ЭКРАН АКЦИИ (живые данные) ================= */
+// Состояние экрана акции. Трёхзначная семантика полей:
+//   undefined = ещё грузится (спиннер), null = не удалось ("unavailable"),
+//   объект = данные готовы. series — кэш по таймфреймам.
 const detail={sym:'NVDA', tf:'1D', type:0, side:'buy', shares:10, _closes:null, series:{}, stats:undefined, news:undefined};
+// Открыть экран: сброс состояния, МГНОВЕННЫЙ показ оболочки,
+// затем параллельный запуск трёх живых загрузок (статистика,
+// новости компании, серия графика) — каждая дорисовывает экран
+// по мере прихода. Аналог initState в detail_screen.dart.
 function openDetail(sym){
   detail.sym=sym; detail.tf='1D'; detail.type=0; detail.side='buy'; detail.shares=10; detail._closes=null;
   detail.series={}; detail.stats=undefined; detail.news=undefined;
   showOverlay('detail'); renderDetail();
-  // fire async live fetches
+  // асинхронные живые загрузки
   API.fetchStats(sym).then(s=>{detail.stats=s||null; if(overlayOpen('detail'))renderDetail();});
   const co=BYSYM[sym];
+  // Нет новостей по компании — подставляем общие заголовки.
   API.fetchCompanyNews(co?co.name:sym).then(a=>{ detail.news=(a&&a.length)?a:(live.headlines.length?live.headlines:null); if(overlayOpen('detail'))renderDetail();});
   ensureSeries(detail.tf);
 }
+// Ленивая загрузка серии таймфрейма: если уже есть или уже грузится —
+// выходим. Двойная проверка перед перерисовкой (оверлей ещё открыт И
+// таймфрейм не сменился) — защита от "гонки" устаревших ответов.
 function ensureSeries(tf){
   if(detail.series[tf]!==undefined) return;
   detail.series[tf]='loading';
   API.seriesForCompany(detail.sym,tf).then(b=>{ detail.series[tf]=b||null; if(overlayOpen('detail')&&detail.tf===tf)renderDetail(); });
 }
+// Полная перерисовка экрана акции: шапка, цена, график, статистика,
+// новости, торговая панель. Всё собирается в одну HTML-строку.
 function renderDetail(){
   const co=BYSYM[detail.sym];const price=priceOf(co),pct=pctOf(co),up=pct>=0;
   const dAbs=isLive(co.sym)?price*pct/100:co.dAbs;
   const bars=detail.series[detail.tf];
   if(bars===undefined)ensureSeries(detail.tf);
-  // chart
+  // === График: три состояния (грузится / нет данных / готов) ===
   let chartInner, periodHtml, isArea=false;
   detail._closes=null;
   if(bars===undefined||bars==='loading'){chartInner=`<div class="chart-msg">${spinner()}</div>`;periodHtml=miniStats(null);}
   else if(bars===null){chartInner=`<div class="chart-msg">Chart unavailable — check your connection</div>`;periodHtml=miniStats(null);}
-  else if(detail.type===1){chartInner=candleBarsSVG(bars.candles,60,320,160);periodHtml=miniStats(bars.closes);}
-  else { isArea=true; detail._closes=bars.closes;
+  else if(detail.type===1){chartInner=candleBarsSVG(bars.candles,60,320,160);periodHtml=miniStats(bars.closes);} // свечи
+  else { isArea=true; detail._closes=bars.closes; // площадной + элементы перекрестия
     chartInner=areaSVG(bars.closes,320,160)+`<div class="cross" id="detCross"><div class="cdot"></div></div><div class="crosslabel" id="detLabel"></div>`;
     periodHtml=miniStats(bars.closes); }
   const chartHtml=`<div class="chartwrap"><div class="chartbox${isArea?' ichart':''}" id="detChart">${chartInner}</div></div>`;
-  // key stats
+  // === Key statistics: '—' для отсутствующих полей (не выдумываем) ===
   const st=detail.stats;
   let kvHtml;
   if(st===undefined)kvHtml=`<div class="chart-msg" style="height:90px">Loading statistics…</div>`;
@@ -287,7 +344,7 @@ function renderDetail(){
       ['Volume',(st&&st.volume!=null)?fmtVol(st.volume):'—'],['Mkt Cap',(st&&st.marketCap!=null)?fmtMcap(st.marketCap/1e9,state.cur):'—'],
       ['P/E',(st&&st.pe!=null)?st.pe.toFixed(1):'—'],['Div Yield',(st&&st.divYield!=null)?st.divYield.toFixed(2)+'%':'—']];
     kvHtml=`<div class="kv">${kv.map(r=>`<div><div class="lab">${r[0]}</div><div class="val mono">${r[1]}</div></div>`).join('')}</div>`; }
-  // related news
+  // === Related news: грузится / пусто / список (максимум 4) ===
   let newsHtml;
   if(detail.news===undefined)newsHtml=`<div class="card" style="padding:18px;text-align:center;color:var(--text3);font-size:12px">Loading related news…</div>`;
   else if(!detail.news||!detail.news.length)newsHtml=`<div class="card" style="padding:18px;text-align:center;color:var(--text3);font-size:12px">No related news right now</div>`;
@@ -297,6 +354,7 @@ function renderDetail(){
       <div style="margin-top:5px;font-size:13px;font-weight:600;line-height:1.4">${escapeHtml(n.title)}</div>
     </div>`).join('')}</div>`;
 
+  // Сборка всего экрана в innerHTML оверлея.
   document.getElementById('detailBody').innerHTML=`
   <div class="page-pad">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
@@ -340,44 +398,53 @@ function renderDetail(){
     <div class="btn btn-ghost" data-act="watch" style="${inWatch(co.sym)?'border-color:var(--brand);color:var(--brand);background:var(--brand-soft)':''}">${inWatch(co.sym)?'✓ In watchlist':'+ Add to watchlist'}</div>
   </div>
   </div>`;
-  wireChart();
+  wireChart(); // после вставки HTML подключаем интерактивное перекрестие
 }
 
-/* Interactive crosshair on the detail area chart: tap/drag to read the
-   price at any point (mirrors the mobile InteractiveAreaChart). */
+/* Интерактивное перекрестие на площадном графике: тап/драг показывает
+   цену в любой точке (зеркало мобильного InteractiveAreaChart). */
 function wireChart(){
   const box=document.getElementById('detChart');
-  if(!box || !box.classList.contains('ichart')) return;
+  if(!box || !box.classList.contains('ichart')) return; // только для area-режима
   const closes=detail._closes;
   if(!closes || closes.length<2) return;
   const cross=document.getElementById('detCross');
   const dot=cross&&cross.querySelector('.cdot');
   const label=document.getElementById('detLabel');
   if(!cross||!label) return;
+  // Цвет перекрестия — под цвет графика (рост/падение).
   const up=closes[closes.length-1]>=closes[0];
   const col=up?'var(--up)':'var(--down)';
   cross.style.borderColor=col; if(dot)dot.style.background=col; label.style.color=col;
   const mn=Math.min(...closes),mx=Math.max(...closes),range=(mx-mn)||1;
   let active=false;
+  // Позиция курсора/пальца -> индекс точки данных -> координаты перекрестия.
   function at(clientX){
     const r=box.getBoundingClientRect();
-    let f=(clientX-r.left)/r.width; f=Math.max(0,Math.min(1,f));
-    const i=Math.round(f*(closes.length-1));
+    let f=(clientX-r.left)/r.width; f=Math.max(0,Math.min(1,f)); // доля 0..1, зажатая краями
+    const i=Math.round(f*(closes.length-1));                     // индекс точки
     const x=i/(closes.length-1)*r.width;
+    // ТА ЖЕ формула нормализации, что при рисовании графика, —
+    // поэтому точка лежит ровно на линии.
     const pad=8/220*r.height, innerH=r.height-pad*2;
     const y=pad+innerH-((closes[i]-mn)/range)*innerH;
     cross.style.display='block'; cross.style.left=x+'px';
     if(dot)dot.style.top=y+'px';
     label.style.display='block'; label.textContent=fmtPrice(closes[i],state.cur);
+    // Метка центрируется над курсором, но прижимается к краям графика.
     const lw=label.offsetWidth||90; label.style.left=Math.max(0,Math.min(r.width-lw,x-lw/2))+'px';
   }
   function end(){active=false;cross.style.display='none';label.style.display='none';}
+  // Pointer Events: единый код для мыши и тачскрина.
+  // setPointerCapture — палец не "теряется" при выходе за границы.
   box.addEventListener('pointerdown',e=>{active=true;try{box.setPointerCapture(e.pointerId);}catch(_){}at(e.clientX);e.preventDefault();});
-  box.addEventListener('pointermove',e=>{ if(active||e.pointerType==='mouse') at(e.clientX); });
+  box.addEventListener('pointermove',e=>{ if(active||e.pointerType==='mouse') at(e.clientX); }); // мышь работает и без нажатия
   box.addEventListener('pointerup',end);
   box.addEventListener('pointercancel',end);
   box.addEventListener('pointerleave',()=>{ if(!active) end(); else end(); });
 }
+// Полоска Period / High / Low под графиком (из серии таймфрейма);
+// без данных — прочерки.
 function miniStats(closes){
   if(!closes){return `<div class="ministats"><div><div class="t3" style="font-size:11px">Period</div><div class="mono" style="font-size:14px;font-weight:600">—</div></div>
     <div><div class="t3" style="font-size:11px">High</div><div class="mono" style="font-size:14px;font-weight:600">—</div></div>
@@ -388,9 +455,11 @@ function miniStats(closes){
     <div><div class="t3" style="font-size:11px">Low</div><div class="mono" style="font-size:14px;font-weight:600">${fmtPrice(lo,state.cur)}</div></div></div>`;
 }
 
-/* ================= AUTH ================= */
-// Decorative "markets hero" banner (inline SVG, brand-styled).
+/* ================= ВХОД / РЕГИСТРАЦИЯ ================= */
+// Декоративный баннер "рынки" (инлайн-SVG в фирменном стиле):
+// градиентный фон, свечение, столбики, линия графика с точкой.
 function heroBanner(){
+  // Столбики генерируются детерминированно: (i*53)%22 — псевдослучайные высоты.
   let bars=''; for(let i=0;i<26;i++){const x=12+i*15.2;const h=7+((i*53)%22);bars+=`<rect x="${x.toFixed(1)}" y="${(152-h).toFixed(1)}" width="7" height="${h}" rx="2"/>`;}
   const line='M0 122 C40 114 62 120 92 102 C122 86 150 98 182 80 C216 60 250 72 286 54 C322 38 356 46 400 30';
   return `<div class="authhero"><svg viewBox="0 0 400 160" preserveAspectRatio="xMidYMid slice">
@@ -411,7 +480,10 @@ function heroBanner(){
       <text x="33" y="14" text-anchor="middle" fill="#16C784" font-family="IBM Plex Mono,monospace" font-size="11" font-weight="700">▲ 2.41%</text></g>
   </svg></div>`;
 }
-let authReg=false;
+let authReg=false; // false = вход, true = регистрация
+// Экран входа/регистрации (демо): баннер, логотип, переключатель
+// режима, OAuth-кнопки, поля формы. Настоящей авторизации нет —
+// кнопки показывают тост (data-toast). Аналог auth_screen.dart.
 function renderAuth(){
   document.getElementById('authBody').innerHTML=`<div class="page-pad">
   <button class="iconbtn" data-close="auth"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICONS.back}</svg></button>
@@ -439,8 +511,10 @@ function renderAuth(){
   </div>`;
 }
 
-/* ================= SEARCH ================= */
-let searchQ='';
+/* ================= ПОИСК ================= */
+let searchQ=''; // текущий запрос (обновляется обработчиком input)
+// Оверлей поиска: фильтр по тикеру (начинается с), имени и сектору
+// (содержит). Перерисовывается на каждый введённый символ.
 function renderSearch(){
   const q=searchQ.trim().toLowerCase();
   const cos=q?COMPANIES.filter(c=>c.sym.toLowerCase().startsWith(q)||c.name.toLowerCase().includes(q)||c.sector.toLowerCase().includes(q)):[];
@@ -454,15 +528,21 @@ function renderSearch(){
   ${q? (cos.length?`<div class="card list">${cos.map(stockRow).join('')}</div>`:`<div class="t3" style="text-align:center;padding:40px 0">No matches for “${escapeHtml(searchQ)}”.</div>`)
      : `<div class="t3" style="text-align:center;padding:40px 0">Type to search the universe — try “sem”, “NVDA”, or “bank”.</div>`}
   </div>`;
+  // После пересоздания input возвращаем фокус и курсор в конец —
+  // иначе печать прерывалась бы на каждом символе.
   const si=document.getElementById('searchInput'); if(si){si.focus();si.setSelectionRange(searchQ.length,searchQ.length);}
 }
 
-/* ================= shell / chrome ================= */
-function spinner(){return `<span class="spin"></span>`;}
-function timeStr(d){return d.toTimeString().slice(0,5);}
+/* ================= каркас / "хром" интерфейса ================= */
+function spinner(){return `<span class="spin"></span>`;}          // крутилка загрузки
+function timeStr(d){return d.toTimeString().slice(0,5);}          // Date -> "HH:MM"
+// Кнопки навигации (одна разметка для сайдбара и нижней панели).
 function navHtml(kind){return TABS.map(t=>`<button class="navbtn ${t[0]===tab?'active':''}" data-tab="${t[0]}">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICONS[t[3]]}</svg><span>${t[1]}</span></button>`).join('');}
 
+// "Хром" = постоянные части интерфейса: сайдбар, нижняя панель,
+// строка статуса, верхняя панель (заголовок вкладки + поиск /
+// выбор валюты / тема / профиль).
 function renderChrome(){
   const meta=TABS.find(t=>t[0]===tab);
   document.getElementById('sideNav').innerHTML=navHtml('side');
@@ -484,6 +564,7 @@ function renderChrome(){
       <button class="iconbtn" data-act="user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICONS.user}</svg></button>
     </div>`;
 }
+// Контент активной вкладки: выбираем функцию-рендерер по значению tab.
 function renderContent(){
   const el=document.getElementById('content');
   let html='';
@@ -493,22 +574,33 @@ function renderContent(){
   else if(tab==='pro')html=renderPro();
   el.innerHTML=`<div class="page">${html}</div>`;
 }
+// ГЛАВНАЯ функция перерисовки: хром + контент + открытый экран акции.
 function render(){ renderChrome(); renderContent(); if(overlayOpen('detail'))renderDetail(); }
 
-/* overlays */
+/* оверлеи (полноэкранные слои: акция / вход / поиск) */
+// Показ = CSS-класс .open; .noscroll запрещает прокрутку страницы под оверлеем.
 function showOverlay(id){document.getElementById('ov-'+id).classList.add('open');document.body.classList.add('noscroll');}
 function hideOverlay(id){document.getElementById('ov-'+id).classList.remove('open');document.body.classList.remove('noscroll');}
 function overlayOpen(id){return document.getElementById('ov-'+id).classList.contains('open');}
 
+// Тост: показать текст на 1.7 сек; clearTimeout — новый тост
+// сбрасывает таймер предыдущего.
 let toastT;
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove('show'),1700);}
 
-/* ================= live refresh + cache ================= */
-const CK='vs_web_cache_v1';
+/* ================= обновление live-данных + кэш ================= */
+const CK='vs_web_cache_v1'; // ключ кэша цен в localStorage
+// Сохранить удачный набор цен (вызывается после каждого успешного refresh).
+// try/catch — в приватном режиме Safari localStorage может бросить исключение.
 function saveCache(){ try{ localStorage.setItem(CK, JSON.stringify({prices:live.prices,sparks:live.sparks,idx:live.idx,t:Date.now()})); }catch(_){}}
+// Прочитать кэш при старте: мгновенный показ последних известных цен
+// (с пометкой fromCache) ещё ДО первого сетевого запроса.
 function loadCache(){ try{ const raw=localStorage.getItem(CK); if(!raw)return; const c=JSON.parse(raw);
   if(c.prices&&Object.keys(c.prices).length){live.prices=c.prices;live.sparks=c.sparks||{};live.idx=c.idx||{};live.usingLive=true;live.fromCache=true;live.lastUpdated=c.t?new Date(c.t):null;} }catch(_){}}
 
+// Обновить всё (зеркало LiveData.refresh() из мобилки):
+// замок от повторного запуска -> котировки -> индексы -> новости ->
+// finally с перерисовкой при любом исходе.
 async function refresh(){
   if(live.loading)return; live.loading=true; live.error=null; render();
   try{
@@ -524,50 +616,70 @@ async function refresh(){
   finally{ live.loading=false; render(); }
 }
 
-/* ================= events ================= */
+/* ================= события ================= */
+// ДЕЛЕГИРОВАНИЕ СОБЫТИЙ: один слушатель click на весь документ.
+// HTML постоянно пересоздаётся строками, поэтому вешать обработчики
+// на каждую кнопку бессмысленно — они терялись бы при каждом рендере.
+// Каждый data-атрибут — маленькая декларативная команда.
 function bindEvents(){
   document.addEventListener('click',e=>{
-    // close the currency menu on any outside click
+    // Закрыть меню валют при любом клике вне его.
     const menu=document.getElementById('curMenu');
     if(menu&&menu.classList.contains('open')&&!e.target.closest('#curCt')) menu.classList.remove('open');
 
+    // closest() поднимается от места клика вверх по DOM до ближайшего
+    // элемента с командным data-атрибутом (клик по иконке внутри
+    // кнопки тоже сработает).
     const t=e.target.closest('[data-tab],[data-act],[data-open],[data-url],[data-toast],[data-close],[data-country],[data-tf],[data-type],[data-authmode],[data-authtoggle],[data-cur],[data-side],[data-watchremove]');
     if(!t)return;
+    // Переключение вкладки (+прокрутка контента к началу).
     if(t.dataset.tab){tab=t.dataset.tab;document.getElementById('content').scrollTop=0;render();return;}
+    // Смена темы — одна строка: атрибут на <html>, остальное делает CSS.
     if(t.dataset.act==='theme'){state.theme=state.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=state.theme;render();return;}
-    if(t.dataset.act==='curtoggle'){const m=document.getElementById('curMenu');if(m)m.classList.toggle('open');return;}
-    if(t.dataset.cur){state.cur=t.dataset.cur;render();return;}
-    if(t.dataset.act==='search'){searchQ='';renderSearch();showOverlay('search');return;}
-    if(t.dataset.act==='user'){renderAuth();showOverlay('auth');return;}
-    if(t.dataset.act==='refresh'){refresh();return;}
-    if(t.dataset.act==='billing'){proAnnual=!proAnnual;render();return;}
+    if(t.dataset.act==='curtoggle'){const m=document.getElementById('curMenu');if(m)m.classList.toggle('open');return;} // меню валют
+    if(t.dataset.cur){state.cur=t.dataset.cur;render();return;}                    // выбор валюты
+    if(t.dataset.act==='search'){searchQ='';renderSearch();showOverlay('search');return;} // открыть поиск
+    if(t.dataset.act==='user'){renderAuth();showOverlay('auth');return;}           // открыть вход
+    if(t.dataset.act==='refresh'){refresh();return;}                               // обновить данные
+    if(t.dataset.act==='billing'){proAnnual=!proAnnual;render();return;}           // тумблер Monthly/Annual
+    // Демо-сделка: тост "Bought/Sold N SYM".
     if(t.dataset.act==='trade'){const co=BYSYM[detail.sym];const n=detail.shares||0;
       toast(`${detail.side==='buy'?'Bought':'Sold'} ${n} ${co.sym}`);return;}
+    // Watchlist с экрана акции: переключить + тост.
     if(t.dataset.act==='watch'){const added=toggleWatch(detail.sym);renderDetail();toast(added?`${detail.sym} added to watchlist`:`${detail.sym} removed from watchlist`);return;}
+    // Кнопка "×" в списке watchlist.
     if(t.dataset.watchremove){toggleWatch(t.dataset.watchremove);render();toast(`${t.dataset.watchremove} removed from watchlist`);return;}
-    if(t.dataset.country){state.country=t.dataset.country;render();return;}
-    if(t.dataset.side){detail.side=t.dataset.side;renderDetail();return;}
-    if(t.dataset.tf){detail.tf=t.dataset.tf;renderDetail();return;}
-    if(t.dataset.type!=null){detail.type=+t.dataset.type;renderDetail();return;}
-    if(t.dataset.authmode!=null){authReg=t.dataset.authmode==='1';renderAuth();return;}
-    if(t.hasAttribute('data-authtoggle')){authReg=!authReg;renderAuth();return;}
-    if(t.dataset.close){hideOverlay(t.dataset.close);return;}
-    if(t.dataset.open){hideOverlay('search');openDetail(t.dataset.open);return;}
+    if(t.dataset.country){state.country=t.dataset.country;render();return;}        // чип страны
+    if(t.dataset.side){detail.side=t.dataset.side;renderDetail();return;}          // Buy/Sell
+    if(t.dataset.tf){detail.tf=t.dataset.tf;renderDetail();return;}                // таймфрейм
+    if(t.dataset.type!=null){detail.type=+t.dataset.type;renderDetail();return;}   // тип графика
+    if(t.dataset.authmode!=null){authReg=t.dataset.authmode==='1';renderAuth();return;} // Sign in / Register
+    if(t.hasAttribute('data-authtoggle')){authReg=!authReg;renderAuth();return;}   // ссылка-переключатель внизу
+    if(t.dataset.close){hideOverlay(t.dataset.close);return;}                      // закрыть оверлей
+    if(t.dataset.open){hideOverlay('search');openDetail(t.dataset.open);return;}   // открыть акцию
+    // Внешняя ссылка в новой вкладке; noopener — защита от tabnabbing.
     if(t.dataset.url){window.open(t.dataset.url,'_blank','noopener');return;}
-    if(t.dataset.toast){toast(t.dataset.toast);return;}
+    if(t.dataset.toast){toast(t.dataset.toast);return;}                            // показать тост
   });
+  // События ввода: поисковая строка и поле количества акций.
   document.addEventListener('input',e=>{
     if(e.target.id==='searchInput'){searchQ=e.target.value;renderSearch();}
     else if(e.target.id==='detShares'){
+      // Живой пересчёт "Estimated cost": точечно обновляем один элемент,
+      // НЕ перерисовывая экран (иначе поле теряло бы фокус).
       detail.shares=Math.max(0,parseInt(e.target.value,10)||0);
       const co=BYSYM[detail.sym];const est=document.getElementById('detEstimate');
       if(est)est.textContent=fmtPrice(priceOf(co)*detail.shares,state.cur);
     }
   });
+  // Escape закрывает любой открытый оверлей (удобство для десктопа).
   document.addEventListener('keydown',e=>{ if(e.key==='Escape'){['detail','auth','search'].forEach(hideOverlay);}});
 }
 
-/* ================= boot ================= */
+/* ================= запуск ================= */
+// Скелет приложения строится ОДИН раз: сайдбар, верхняя панель,
+// контент, нижняя панель, три оверлея и контейнер тоста. Дальше
+// render() обновляет только внутренности этих контейнеров.
 function buildShell(){
   document.getElementById('app').innerHTML=`
   <div class="shell">
@@ -588,6 +700,10 @@ function buildShell(){
   <div class="overlay" id="ov-search"><div class="ov-card" id="searchBody"></div></div>
   <div class="toast" id="toast"></div>`;
 }
+// Точка входа (IIFE — выполняется сразу; скрипт подключён в конце
+// <body>, DOM уже готов). Порядок продуман: тема -> каркас ->
+// обработчики -> кэш цен (мгновенный показ) -> рендер -> сеть.
+// Пользователь НИКОГДА не смотрит на пустой экран.
 (function init(){
   document.documentElement.dataset.theme=state.theme;
   buildShell(); bindEvents(); loadCache(); render(); refresh();

@@ -1,11 +1,24 @@
 /* ============================================================
-   VibeStocking Web — data engine + chart math (pure, no DOM).
-   Ported from lib/data/market_data.dart. Provides the universe,
-   deterministic demo series (fallback), SVG chart renderers and
-   formatting helpers shared by api.js / app.js.
+   data.js — ДАННЫЕ + МАТЕМАТИКА ГРАФИКОВ (чистые функции, без DOM).
+
+   Оригинал, с которого портирован мобильный lib/data/market_data.dart.
+   Содержит:
+     • "вселенную": 18 компаний, 6 индексов, валюты, страны,
+       демо-новости, демо-портфель, стартовый watchlist;
+     • детерминированный демо-генератор графиков (fallback);
+     • SVG-рендереры графиков (area / sparkline / candles);
+     • форматтеры цен/процентов с конвертацией валют;
+     • SVG-иконки интерфейса.
+   Всё это используют api.js и app.js.
    ============================================================ */
 
-/* ---- Universe ---- */
+/* ---- Вселенная ---- */
+// Компании хранятся компактными массивами:
+// [тикер, имя, биржа, страна, сектор, цена, волатильность, изм.за день %,
+//  seed для демо-графика, капитализация $млрд, P/E, дивиденды %]
+// .map разворачивает их в объекты и добавляет вычисляемые поля:
+// prevClose (вчерашнее закрытие) и dAbs (изменение в $) — те же
+// формулы, что в Dart-модели Company.
 const COMPANIES = [
  ['NVDA','NVIDIA Corp.','NASDAQ','US','Semiconductors',1187.4,0.012,3.42,11,2920,64.1,0.03],
  ['AAPL','Apple Inc.','NASDAQ','US','Consumer Tech',229.86,0.008,1.18,12,3480,34.2,0.51],
@@ -27,8 +40,10 @@ const COMPANIES = [
  ['BABA','Alibaba Group','NYSE','CN','E-Commerce',78.9,0.015,-2.08,28,191,16.7,0.0],
 ].map(a=>{const o={sym:a[0],name:a[1],exch:a[2],country:a[3],sector:a[4],price:a[5],vol:a[6],dPct:a[7],seed:a[8],mcap:a[9],pe:a[10],divYield:a[11]};
   o.prevClose=o.price/(1+o.dPct/100); o.dAbs=o.price-o.prevClose; return o;});
+// Быстрый доступ по тикеру: BYSYM['NVDA'].
 const BYSYM = Object.fromEntries(COMPANIES.map(c=>[c.sym,c]));
 
+// Индексы: [тикер, имя, страна, базовый уровень, волатильность, изм. %, seed].
 const INDICES = [
  ['SPX','S&P 500','US',5431.6,0.004,0.62,101],['NDX','Nasdaq 100','US',19210.4,0.006,1.04,102],
  ['DJI','Dow Jones','US',38790.2,0.004,-0.21,103],['DAX','DAX 40','DE',18412.7,0.005,0.38,104],
@@ -37,16 +52,20 @@ const INDICES = [
   o.prevClose=o.base/(1+o.dPct/100); o.dAbs=o.base-o.prevClose; return o;});
 const BYIDX = Object.fromEntries(INDICES.map(i=>[i.sym,i]));
 
+// Валюты: код -> [символ, курс к USD, название].
+// Все цены хранятся в USD и конвертируются умножением на курс.
 const CUR = {USD:['$',1,'US Dollar'],EUR:['€',0.92,'Euro'],GBP:['£',0.79,'British Pound'],
   JPY:['¥',157.3,'Japanese Yen'],CHF:['Fr',0.89,'Swiss Franc'],AED:['د.إ',3.67,'UAE Dirham']};
 
+// Страны-рынки: [код, имя, флаг, биржи, главный индекс].
+// Выбор страны на экране Markets меняет hero-блок на её индекс.
 const COUNTRIES = [
  ['US','United States','🇺🇸','NYSE · NASDAQ','SPX'],['DE','Germany','🇩🇪','XETRA','DAX'],
  ['GB','United Kingdom','🇬🇧','LSE','UKX'],['JP','Japan','🇯🇵','TSE','NKY'],
  ['NL','Netherlands','🇳🇱','Euronext','DAX'],['CN','China','🇨🇳','SSE · HKEX','NKY'],
 ].map(a=>({code:a[0],name:a[1],flag:a[2],market:a[3],index:a[4]}));
 
-/* static news (fallback only — live headlines come from NewsAPI) */
+/* Демо-новости (ТОЛЬКО fallback — живые заголовки приходят из NewsAPI). */
 const NEWS = [
  [1,'NVDA','Earnings','Nvidia smashes Q3 estimates as data-center revenue jumps 94% on AI demand','MarketWire',12,'up','chip render'],
  [2,'TSLA','Autos','Tesla deliveries slip in Europe amid intensifying EV price war','Reuters',38,'down','EV photo'],
@@ -60,23 +79,37 @@ const NEWS = [
  [10,'JPM','Banking','JPMorgan flags resilient consumer, lifts net-interest guidance','Bloomberg',240,'up','HQ tower'],
 ].map(a=>({id:a[0],sym:a[1],tag:a[2],title:a[3],src:a[4],mins:a[5],sentiment:a[6],img:a[7]}));
 
+// Демо-портфель: [тикер, штук, средняя цена покупки].
 const PORTFOLIO = [['NVDA',14,612.40],['AAPL',60,188.20],['MSFT',22,402.10],
   ['TSLA',30,274.80],['AMZN',25,165.30],['COIN',18,198.55]].map(a=>({sym:a[0],shares:a[1],avg:a[2]}));
+// Стартовый watchlist (для первого запуска, дальше — localStorage).
 const WATCHLIST = ['META','AMD','ASML','GOOGL','NFLX'];
 
+// Фирменный цветовой тон (hue, 0..360) каждого тикера для градиентных чипов.
 const HUES = {NVDA:140,AAPL:220,MSFT:205,TSLA:0,AMZN:32,GOOGL:220,META:222,AMD:6,JPM:210,
   NFLX:354,DIS:232,COIN:222,SAP:205,SIE:178,ASML:24,SHEL:48,TM:0,BABA:28,
   SPX:220,NDX:222,DJI:210,DAX:200,UKX:250,NKY:354};
-const hueFor=s=>HUES[s]??220;
+const hueFor=s=>HUES[s]??220; // синий по умолчанию
+// Диагональный градиент чипа: hue -> два близких оттенка HSL.
 const chipGrad=s=>{const h=hueFor(s);return `linear-gradient(135deg, hsl(${h} 72% 56%), hsl(${(h+34)%360} 78% 44%))`;};
 
-/* ---- Demo chart math (fallback when an API call fails) ---- */
+/* ---- Демо-математика графиков (fallback при отказе API) ---- */
+// Сидированный ГПСЧ mulberry32: одинаковый seed -> одинаковая
+// последовательность -> демо-графики стабильны между перезагрузками.
 function rng(seed){let a=seed>>>0;return function(){a=(a+0x6D2B79F5)>>>0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return ((t^(t>>>14))>>>0)/4294967296;};}
+// "Случайное блуждание" цены: momentum с затуханием 0.82 имитирует
+// инерцию реальных рядов; ограничение снизу — цена не падает ниже 25% базы.
 function walk(seed,base,points,vol,trend){const r=rng(seed);const out=[];let v=base*(1-trend*0.5);const drift=(base*trend)/points;let mom=0;for(let i=0;i<points;i++){mom=mom*0.82+(r()-0.5)*base*vol;v+=drift+mom;if(v<base*0.25)v=base*0.25;out.push(v);}return out;}
+// "Прибить" концы серии к значениям a (начало) и b (конец), сохранив форму:
+// нужно, чтобы 1D-график сходился с числами prevClose/цена на экране.
 function anchor(s,a,b){const n=s.length,s0=s[0],sN=s[n-1];for(let i=0;i<n;i++){const t=i/(n-1);const own=s0+(sN-s0)*t;const dev=s[i]-own;s[i]=(a+(b-a)*t)+dev;}}
+// Таймфреймы: [число точек, множитель волатильности].
 const TF={'1D':[78,0.45],'1W':[56,0.7],'1M':[30,1.0],'3M':[64,1.5],'1Y':[80,2.4]};
-const TFO=['1D','1W','1M','3M','1Y'];
+const TFO=['1D','1W','1M','3M','1Y']; // порядок кнопок
+// Кэш сгенерированных серий (генерация детерминированная — кэш безопасен).
 const _cache={};
+// Демо-серия компании за таймфрейм. Тренд: для 1D — ровно дневное
+// изменение бумаги; для длинных окон — псевдослучайный по seed.
 function seriesFor(sym,tf){const k=sym+'|'+tf;if(_cache[k])return _cache[k];const c=BYSYM[sym];const[pts,volK]=TF[tf];let trend;
   if(tf==='1D')trend=c.dPct/100;
   else if(tf==='1W')trend=(c.dPct/100)*1.6+(rng(c.seed+7)()-0.45)*0.05;
@@ -85,21 +118,28 @@ function seriesFor(sym,tf){const k=sym+'|'+tf;if(_cache[k])return _cache[k];cons
   else trend=(rng(c.seed+23)()-0.32)*0.85;
   const s=walk(c.seed*31+pts,c.price,pts,c.vol*volK,trend);
   if(tf==='1D')anchor(s,c.prevClose,c.price);_cache[k]=s;return s;}
+// Демо-серия индекса (та же логика).
 function indexSeries(ix,tf){const[pts,volK]=TF[tf];const trend=tf==='1D'?ix.dPct/100:(rng(ix.seed+tf.length*9)()-0.4)*(tf==='1Y'?0.4:0.2);
   const s=walk(ix.seed*17+pts,ix.base,pts,ix.vol*volK,trend);if(tf==='1D')anchor(s,ix.prevClose,ix.base);return s;}
 
-/* ---- SVG renderers ---- */
+/* ---- SVG-рендереры (веб-аналог CustomPainter из мобилки) ---- */
+// Площадной график: сглаженная кривая Безье + градиентная заливка + точка.
+// Возвращает ГОТОВУЮ SVG-строку, которая вставляется в innerHTML.
 function areaSVG(s,w,h,colorOverride){
   if(!s||s.length<2)return '';
+  // Цвет автоматически: рост -> зелёный, падение -> красный (CSS-переменные).
   const up=s[s.length-1]>=s[0];const color=colorOverride||(up?'var(--up)':'var(--down)');
   const pad=8/220*h, innerH=h-pad*2;
-  const mn=Math.min(...s),mx=Math.max(...s),range=(mx-mn)||1;
+  const mn=Math.min(...s),mx=Math.max(...s),range=(mx-mn)||1; // защита от деления на 0
+  // Нормализация: значение -> точка [x, y] (та же формула, что в Dart).
   const pts=s.map((v,i)=>[i/(s.length-1)*w, pad+innerH-((v-mn)/range)*innerH]);
+  // Кривая Безье через середины отрезков — гладкая линия вместо ломаной.
   let line='M'+pts[0][0].toFixed(1)+' '+pts[0][1].toFixed(1);
   for(let i=1;i<pts.length;i++){const p0=pts[i-1],p1=pts[i],cx=((p0[0]+p1[0])/2).toFixed(1);
     line+=`C${cx} ${p0[1].toFixed(1)} ${cx} ${p1[1].toFixed(1)} ${p1[0].toFixed(1)} ${p1[1].toFixed(1)}`;}
-  const area=line+`L${w} ${h}L0 ${h}Z`;
+  const area=line+`L${w} ${h}L0 ${h}Z`; // замыкаем путь вниз для заливки
   const last=pts[pts.length-1];
+  // Уникальный id градиента — на странице может быть много графиков сразу.
   const gid='g'+Math.random().toString(36).slice(2,7);
   let grid='';for(let i=0;i<=4;i++){const y=(h/4*i).toFixed(1);grid+=`<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="var(--chart-grid)" stroke-width="1"/>`;}
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:100%">
@@ -111,13 +151,16 @@ function areaSVG(s,w,h,colorOverride){
     <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="${color}" opacity="0.18"/>
     <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.2" fill="${color}"/></svg>`;
 }
+// Спарклайн: простая ломаная 52×26 для строк списков.
 function sparkSVG(s){if(!s||s.length<2)return '';const w=52,h=26,up=s[s.length-1]>=s[0],color=up?'var(--up)':'var(--down)';
   const pad=3/36*h,innerH=h-pad*2,mn=Math.min(...s),mx=Math.max(...s),range=(mx-mn)||1;
   const pts=s.map((v,i)=>`${(i/(s.length-1)*w).toFixed(1)},${(pad+innerH-((v-mn)/range)*innerH).toFixed(1)}`);
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:100%">
     <polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`;
 }
-/* candles from real OHLC bars [{open,high,low,close}], downsampled to <=maxBars */
+/* Свечи из живых OHLC-баров [{open,high,low,close}].
+   Если баров больше maxBars — прореживаем: open от первого бара корзины,
+   close от последнего, high/low — экстремумы корзины (график читаем). */
 function candleBarsSVG(bars,maxBars,w,h){
   if(!bars||!bars.length)return '';
   let data=bars;
@@ -125,27 +168,38 @@ function candleBarsSVG(bars,maxBars,w,h){
     for(let i=0;i<bars.length;i+=step){const sl=bars.slice(i,Math.min(i+step,bars.length));
       let hi=sl[0].high,lo=sl[0].low;sl.forEach(c=>{hi=Math.max(hi,c.high);lo=Math.min(lo,c.low);});
       data.push({open:sl[0].open,high:hi,low:lo,close:sl[sl.length-1].close});}}
+  // Диапазон по всем свечам: от минимального low до максимального high.
   let mn=Infinity,mx=-Infinity;data.forEach(d=>{mn=Math.min(mn,d.low);mx=Math.max(mx,d.high);});
   const range=(mx-mn)||1,pad=6/220*h;const y=v=>pad+(h-pad*2)-((v-mn)/range)*(h-pad*2);
-  const cw=w/data.length,bw=Math.max(1,cw*0.62);let grid='';
+  const cw=w/data.length,bw=Math.max(1,cw*0.62);let grid=''; // тело свечи = 62% слота
   for(let i=0;i<=4;i++){const yy=(h/4*i).toFixed(1);grid+=`<line x1="0" y1="${yy}" x2="${w}" y2="${yy}" stroke="var(--chart-grid)" stroke-width="1"/>`;}
   let body='';data.forEach((d,i)=>{const x=i*cw+cw/2;const up=d.close>=d.open;const col=up?'var(--up)':'var(--down)';
+    // Фитиль (high-low) + тело (open-close); мин. высота тела 1.5px — дожи видны.
     const yo=y(d.open),yc=y(d.close),top=Math.min(yo,yc),bh=Math.max(Math.abs(yc-yo),1.5);
     body+=`<line x1="${x.toFixed(1)}" y1="${y(d.high).toFixed(1)}" x2="${x.toFixed(1)}" y2="${y(d.low).toFixed(1)}" stroke="${col}" stroke-width="1.2"/>
       <rect x="${(x-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="${col}"/>`;});
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:100%">${grid}${body}</svg>`;
 }
 
-/* ---- Formatting ---- */
+/* ---- Форматирование ---- */
+// Число с разделителями тысяч и заданным числом знаков.
 function grp(v,dp){return v.toLocaleString('en-US',{minimumFractionDigits:dp,maximumFractionDigits:dp});}
+// Цена: USD -> выбранная валюта + символ; для иены — без копеек.
 function fmtPrice(usd,code,dp){const[sym,rate]=CUR[code];const v=usd*rate;const d=dp!=null?dp:(code==='JPY'?0:2);return sym+grp(v,d);}
 function fmtNum(v,dp){return grp(v,dp||0);}
+// Процент со знаком: "+3.42%" / "-0.61%".
 function fmtPct(p){return (p>=0?'+':'')+p.toFixed(2)+'%';}
+// Капитализация: вход в млрд, вывод "$3.48T" / "€244.0B".
 function fmtMcap(b,code){const[sym,rate]=CUR[code];const v=b*rate;return v>=1000?sym+(v/1000).toFixed(2)+'T':sym+v.toFixed(1)+'B';}
+// Объём торгов компактно: 45.2M, 1.30B.
 function fmtVol(v){if(v>=1e9)return (v/1e9).toFixed(2)+'B';if(v>=1e6)return (v/1e6).toFixed(2)+'M';if(v>=1e3)return (v/1e3).toFixed(2)+'K';return ''+Math.round(v);}
+// Относительное время новости: "12m ago" / "2h ago" / "3d ago".
 function relTime(m){if(m<60)return m+'m ago';const h=Math.floor(m/60);return h<24?h+'h ago':Math.floor(h/24)+'d ago';}
+// Экранирование HTML — ЗАЩИТА ОТ XSS: внешние данные (заголовки новостей)
+// вставляются в innerHTML, поэтому спецсимволы обязательно кодируются.
 function escapeHtml(s){return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
+// SVG-иконки интерфейса (path-содержимое, обёртка <svg> добавляется на месте).
 const ICONS={
   chart:'<path d="M3 3v18h18"/><path d="M7 14l3-4 3 2 4-6"/>',
   article:'<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/>',

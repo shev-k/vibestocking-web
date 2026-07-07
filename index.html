@@ -1,16 +1,35 @@
 <!DOCTYPE html>
+<!-- ============================================================
+  index.html — КАРКАС веб-версии VibeStocking (SPA).
+
+  Весь видимый HTML — это один <div id="app">: интерфейс целиком
+  строится JavaScript-ом (app.js), без React/Vue — чистый DOM.
+
+  data-theme="dark" на <html> — переключение темы делается сменой
+  этого атрибута; в styles.css обе палитры заданы CSS-переменными.
+
+  Порядок скриптов ВАЖЕН:
+    1) data.js — данные, демо-движок, SVG-графики, форматтеры;
+    2) api.js  — сетевой слой (живые данные через CORS-прокси);
+    3) app.js  — состояние, рендер экранов, события (использует оба).
+============================================================ -->
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8" />
+<!-- viewport-fit=cover — корректная отрисовка под "чёлку" телефонов -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<!-- цвет строки браузера на мобильных — под тёмную тему -->
 <meta name="theme-color" content="#080B11" />
 <title>VibeStocking — global markets</title>
+<!-- preconnect ускоряет загрузку шрифтов (заранее открывает соединение) -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<!-- те же шрифты, что и в мобильном приложении: IBM Plex Sans / Mono -->
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+<!-- единственный корневой элемент — всё остальное создаст app.js -->
 <div id="app"></div>
 <script src="data.js"></script>
 <script src="api.js"></script>
